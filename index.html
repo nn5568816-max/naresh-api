@@ -923,8 +923,9 @@ const API_CONFIG = {
     label: "VEHICLE NUMBER",
     placeholder: "Enter vehicle number (e.g. AP09AB1234)",
     prefix: "RC",
-    url: "https://apihub-livid.vercel.app/api/vehicle?key=naxupdate_b41ebdbb9f80d33500&veh={query}",
-    fallbackUrl: "https://api.allorigins.win/raw?url=" + encodeURIComponent("https://apihub-livid.vercel.app/api/vehicle?key=naxupdate_b41ebdbb9f80d33500&veh={query}")
+    // Same-origin Vercel route. Configure your authorized upstream API
+    // and credentials inside the Vercel server function.
+    proxy: "/api/vehicle"
   },
 
   aadhar: {
@@ -932,8 +933,9 @@ const API_CONFIG = {
     label: "AADHAAR NUMBER",
     placeholder: "Enter 12-digit Aadhaar number",
     prefix: "ID",
-    url: "https://redxapipanel.vercel.app/api/v1/info?service=aadharinfo&key=aadhardemo&query={query}",
-    fallbackUrl: "https://api.allorigins.win/raw?url=" + encodeURIComponent("https://redxapipanel.vercel.app/api/v1/info?service=aadharinfo&key=aadhardemo&query={query}")
+    // Same-origin Vercel route. Configure your authorized upstream API
+    // and credentials inside the Vercel server function.
+    proxy: "/api/aadhar"
   }
 };
 
@@ -1047,25 +1049,50 @@ buttons.forEach(btn => {
 
 /* Flexible Request Fetcher with Proxy / Fallback capabilities */
 async function fetchWithFallback(cfg, value) {
-  let endpoint = cfg.url.replace("{query}", encodeURIComponent(value));
-  consoleLog("REQUEST", "Executing GET request to " + cfg.name);
-  
-  try {
-    let response = await fetch(endpoint, { method: "GET" });
-    if (!response.ok && response.status === 500 && cfg.fallbackUrl) {
-      consoleLog("ERROR", "Primary API returned 500. Retrying with Proxy Routing...");
-      endpoint = cfg.fallbackUrl.replace("{query}", encodeURIComponent(value));
-      response = await fetch(endpoint, { method: "GET" });
-    }
-    return { response, endpoint };
-  } catch (err) {
-    if (cfg.fallbackUrl) {
-      consoleLog("ERROR", "Direct fetch failed (CORS/SSL). Trying proxy bridge...");
-      endpoint = cfg.fallbackUrl.replace("{query}", encodeURIComponent(value));
-      const response = await fetch(endpoint, { method: "GET" });
+  // Same-origin Vercel routes prevent browser CORS problems.
+  // Never place third-party API keys in this HTML file.
+  if (cfg.proxy) {
+    const separator = cfg.proxy.includes("?") ? "&" : "?";
+    const endpoint = cfg.proxy + separator + "query=" + encodeURIComponent(value);
+
+    consoleLog("REQUEST", "Calling Vercel server proxy for " + cfg.name);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        signal: controller.signal,
+        cache: "no-store"
+      });
       return { response, endpoint };
+    } finally {
+      clearTimeout(timeoutId);
     }
-    throw err;
+  }
+
+  if (!cfg.url) {
+    throw new Error("No API endpoint configured for " + cfg.name);
+  }
+
+  const endpoint = cfg.url.replace("{query}", encodeURIComponent(value));
+  consoleLog("REQUEST", "Executing GET request to " + cfg.name);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: { "Accept": "application/json" },
+      signal: controller.signal,
+      cache: "no-store"
+    });
+    return { response, endpoint };
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -1141,20 +1168,22 @@ searchBtn.addEventListener("click", async () => {
   }catch(error){
     setConsoleStatus("REQUEST ERROR", "error");
 
-    // Mock fallback response for smooth UI experience when external third-party API hosts are down
-    const mockFallbackData = {
-      status: "notice",
+    const timedOut = error && error.name === "AbortError";
+    const message = timedOut
+      ? "Request timed out after 20 seconds. Check the Vercel function and upstream API."
+      : (error.message || "Network request failed.");
+
+    const errorData = {
+      status: "error",
       service: cfg.name,
       query: value,
-      message: "The third-party server hosting this API endpoint is currently unreachable or down.",
-      details: error.message,
-      recommendation: "Please try again later or replace the endpoint in API_CONFIG with an active host."
+      message,
+      note: "Keep third-party API credentials server-side in Vercel environment variables."
     };
 
-    showJSON(mockFallbackData);
-
-    hint.textContent = "Request failed: " + error.message;
-    consoleLog("ERROR", "Request failed: " + error.message);
+    showJSON(errorData);
+    hint.textContent = message;
+    consoleLog("ERROR", message);
   }finally{
     searchBtn.disabled = false;
     searchBtn.textContent = "⌕  SEARCH";
